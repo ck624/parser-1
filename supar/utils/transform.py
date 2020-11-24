@@ -174,11 +174,11 @@ class CoNLL(Transform):
 
     @property
     def src(self):
-        return self.FORM, self.CPOS
+        return self.FORM, self.LEMMA, self.CPOS, self.POS, self.FEATS
 
     @property
     def tgt(self):
-        return self.HEAD, self.DEPREL
+        return self.HEAD, self.DEPREL, self.PHEAD, self.PDEPREL
 
     @classmethod
     def get_arcs(cls, sequence):
@@ -201,6 +201,34 @@ class CoNLL(Transform):
                         sibs[j] = i
                     break
         return sibs[1:]
+
+    @classmethod
+    def get_edges(cls, sequence):
+        edges = [[0]*len(sequence) for _ in range(len(sequence))]
+        for i, s in enumerate(sequence):
+            if s != '_':
+                for pair in s.split('|'):
+                    edges[i][int(pair.split(':')[0])-1] = 1
+        return edges
+
+    @classmethod
+    def get_labels(cls, sequence):
+        labels = [[None]*len(sequence) for _ in range(len(sequence))]
+        for i, s in enumerate(sequence):
+            if s != '_':
+                for pair in s.split('|'):
+                    edge, label = pair.split(':')
+                    labels[i][int(edge)-1] = label
+        return labels
+
+    @classmethod
+    def build_relations(cls, chart):
+        sequence = ['_'] * len(chart)
+        for i, row in enumerate(chart):
+            pairs = [(j+1, label) for j, label in enumerate(row) if label is not None]
+            if len(pairs) > 0:
+                sequence[i] = '|'.join(f"{head}:label" for head, label in pairs)
+        return sequence
 
     @classmethod
     def toconll(cls, tokens):
