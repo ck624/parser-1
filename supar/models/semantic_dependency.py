@@ -32,7 +32,7 @@ class BiaffineSemanticDependencyModel(nn.Module):
         n_embed (int):
             The size of word embeddings. Default: 100.
         n_embed_proj (int):
-            The size of linearly transformed word embeddings. Default: 100.
+            The size of linearly transformed word embeddings. Default: 125.
         n_feat_embed (int):
             The size of feature representations. Default: 100.
         n_char_embed (int):
@@ -50,17 +50,17 @@ class BiaffineSemanticDependencyModel(nn.Module):
         embed_dropout (float):
             The dropout ratio of input embeddings. Default: .2.
         n_lstm_hidden (int):
-            The size of LSTM hidden states. Default: 400.
+            The size of LSTM hidden states. Default: 600.
         n_lstm_layers (int):
             The number of LSTM layers. Default: 3.
         lstm_dropout (float):
             The dropout ratio of LSTM. Default: .33.
         n_mlp_edge (int):
-            Edge MLP size. Default: 500.
+            Edge MLP size. Default: 600.
         n_mlp_label  (int):
-            Label MLP size. Default: 100.
+            Label MLP size. Default: 600.
         edge_mlp_dropout (float):
-            The dropout ratio of edge MLP layers. Default: .33.
+            The dropout ratio of edge MLP layers. Default: .25.
         label_mlp_dropout (float):
             The dropout ratio of label MLP layers. Default: .33.
         feat_pad_index (int):
