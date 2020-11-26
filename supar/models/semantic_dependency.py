@@ -243,9 +243,8 @@ class BiaffineSemanticDependencyModel(nn.Module):
                 The mask for covering the unpadded chart positions.
 
         Returns:
-            ~torch.Tensor:
-                Predicted charts of shape ``[batch_size, seq_len, seq_len]``.
+            ~torch.Tensor, ~torch.Tensor:
+                Predicted edges and labels of shape ``[batch_size, seq_len, seq_len]``.
         """
 
-        edge_preds, label_preds = s_egde.argmax(-1), s_label.argmax(-1)
-        return label_preds.masked_fill_(~(edge_preds.gt(0) & mask), -1)
+        return s_egde.argmax(-1), s_label.argmax(-1)

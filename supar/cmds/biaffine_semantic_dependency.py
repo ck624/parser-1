@@ -10,6 +10,7 @@ def main():
     parser = argparse.ArgumentParser(description='Create Biaffine Semantic Dependency Parser.')
     parser.set_defaults(Parser=BiaffineSemanticDependencyParser)
     subparsers = parser.add_subparsers(title='Commands', dest='mode')
+    # train
     subparser = subparsers.add_parser('train', help='Train a parser.')
     subparser.add_argument('--feat', '-f', choices=['tag', 'char', 'bert'], help='choices of additional features')
     subparser.add_argument('--build', '-b', action='store_true', help='whether to build the model first')

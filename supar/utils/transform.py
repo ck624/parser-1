@@ -32,7 +32,7 @@ class Transform(object):
                 field = [field]
             for f in field:
                 if f is not None:
-                    s += f"    {f}\n"
+                    s += f"  {f}\n"
         return f"{self.__class__.__name__}({s})"
 
     def __call__(self, sentences):

@@ -121,8 +121,9 @@ class BiaffineSemanticDependencyParser(Parser):
             self.optimizer.step()
             self.scheduler.step()
 
-            chart_preds = self.model.decode(s_edge, s_label, mask)
-            metric(chart_preds, labels.masked_fill(~(edges.gt(0) & mask), -1))
+            edge_preds, label_preds = self.model.decode(s_edge, s_label, mask)
+            metric(label_preds.masked_fill(~(edge_preds.gt(0) & mask), -1)[:, 1:],
+                   labels.masked_fill(~(edges.gt(0) & mask), -1)[:, 1:])
             bar.set_postfix_str(f"lr: {self.scheduler.get_last_lr()[0]:.4e} - loss: {loss:.4f} - {metric}")
 
     @torch.no_grad()
@@ -139,8 +140,9 @@ class BiaffineSemanticDependencyParser(Parser):
             loss = self.model.loss(s_edge, s_label, edges, labels, mask)
             total_loss += loss.item()
 
-            chart_preds = self.model.decode(s_edge, s_label, mask)
-            metric(chart_preds, labels.masked_fill(~(edges.gt(0) & mask), -1))
+            edge_preds, label_preds = self.model.decode(s_edge, s_label, mask)
+            metric(label_preds.masked_fill(~(edge_preds.gt(0) & mask), -1)[:, 1:],
+                   labels.masked_fill(~(edges.gt(0) & mask), -1)[:, 1:])
         total_loss /= len(loader)
 
         return total_loss, metric
@@ -208,20 +210,21 @@ class BiaffineSemanticDependencyParser(Parser):
         logger.info("Building the fields")
         WORD = Field('words', pad=pad, unk=unk, bos=bos, lower=True)
         if args.feat == 'char':
-            FEAT = SubwordField('chars', pad=pad, unk=unk, fix_len=args.fix_len)
+            FEAT = SubwordField('chars', pad=pad, unk=unk, bos=bos, fix_len=args.fix_len)
         elif args.feat == 'bert':
             from transformers import AutoTokenizer
             tokenizer = AutoTokenizer.from_pretrained(args.bert)
             FEAT = SubwordField('bert',
                                 pad=tokenizer.pad_token,
                                 unk=tokenizer.unk_token,
+                                bos=tokenizer.bos_token or tokenizer.cls_token,
                                 fix_len=args.fix_len,
                                 tokenize=tokenizer.tokenize)
             FEAT.vocab = tokenizer.get_vocab()
         else:
             FEAT = Field('tags', bos=bos)
-        EDGE = ChartField('edges', bos=bos, use_vocab=False, fn=CoNLL.get_edges)
-        LABEL = ChartField('labels', bos=bos, fn=CoNLL.get_labels)
+        EDGE = ChartField('edges', use_vocab=False, fn=CoNLL.get_edges)
+        LABEL = ChartField('labels', fn=CoNLL.get_labels)
         if args.feat in ('char', 'bert'):
             transform = CoNLL(FORM=(WORD, FEAT), PHEAD=(EDGE, LABEL))
         else:
@@ -238,7 +241,6 @@ class BiaffineSemanticDependencyParser(Parser):
             'n_labels': len(LABEL.vocab),
             'pad_index': WORD.pad_index,
             'unk_index': WORD.unk_index,
-            'bos_index': WORD.bos_index,
             'feat_pad_index': FEAT.pad_index
         })
 
