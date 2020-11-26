@@ -31,6 +31,8 @@ class BiaffineSemanticDependencyModel(nn.Module):
             Default: ``'char'``.
         n_embed (int):
             The size of word embeddings. Default: 100.
+        n_embed_proj (int):
+            The size of linearly transformed word embeddings. Default: 100.
         n_feat_embed (int):
             The size of feature representations. Default: 100.
         n_char_embed (int):
@@ -46,7 +48,7 @@ class BiaffineSemanticDependencyModel(nn.Module):
         mix_dropout (float):
             The dropout ratio of BERT layers. Required if ``feat='bert'``. Default: .0.
         embed_dropout (float):
-            The dropout ratio of input embeddings. Default: .33.
+            The dropout ratio of input embeddings. Default: .2.
         n_lstm_hidden (int):
             The size of LSTM hidden states. Default: 400.
         n_lstm_layers (int):
@@ -54,11 +56,13 @@ class BiaffineSemanticDependencyModel(nn.Module):
         lstm_dropout (float):
             The dropout ratio of LSTM. Default: .33.
         n_mlp_edge (int):
-            Arc MLP size. Default: 500.
+            Edge MLP size. Default: 500.
         n_mlp_label  (int):
             Label MLP size. Default: 100.
-        mlp_dropout (float):
-            The dropout ratio of MLP layers. Default: .33.
+        edge_mlp_dropout (float):
+            The dropout ratio of edge MLP layers. Default: .33.
+        label_mlp_dropout (float):
+            The dropout ratio of label MLP layers. Default: .33.
         feat_pad_index (int):
             The index of the padding token in the feat vocabulary. Default: 0.
         pad_index (int):
@@ -78,21 +82,24 @@ class BiaffineSemanticDependencyModel(nn.Module):
                  n_labels,
                  feat='char',
                  n_embed=100,
+                 n_embed_proj=125,
                  n_feat_embed=100,
                  n_char_embed=50,
                  bert=None,
                  n_bert_layers=4,
                  mix_dropout=.0,
-                 embed_dropout=.33,
+                 embed_dropout=.2,
                  n_lstm_hidden=600,
                  n_lstm_layers=3,
                  lstm_dropout=.33,
                  n_mlp_edge=600,
                  n_mlp_label=600,
-                 mlp_dropout=.33,
+                 edge_mlp_dropout=.25,
+                 label_mlp_dropout=.33,
                  feat_pad_index=0,
                  pad_index=0,
                  unk_index=1,
+                 interpolation=0.1,
                  **kwargs):
         super().__init__()
 
@@ -100,6 +107,8 @@ class BiaffineSemanticDependencyModel(nn.Module):
         # the embedding layer
         self.word_embed = nn.Embedding(num_embeddings=n_words,
                                        embedding_dim=n_embed)
+        self.embed_proj = nn.Linear(n_embed, n_embed_proj)
+
         if feat == 'char':
             self.feat_embed = CharLSTM(n_chars=n_feats,
                                        n_embed=n_char_embed,
@@ -117,10 +126,10 @@ class BiaffineSemanticDependencyModel(nn.Module):
                                            embedding_dim=n_feat_embed)
         else:
             raise RuntimeError("The feat type should be in ['char', 'bert', 'tag'].")
-        self.embed_dropout = IndependentDropout(p=embed_dropout)
+        self.embed_dropout = IndependentDropout(p=0.2)
 
         # the lstm layer
-        self.lstm = LSTM(input_size=n_embed+n_feat_embed,
+        self.lstm = LSTM(input_size=n_embed+n_feat_embed+n_embed_proj,
                          hidden_size=n_lstm_hidden,
                          num_layers=n_lstm_layers,
                          bidirectional=True,
@@ -128,10 +137,10 @@ class BiaffineSemanticDependencyModel(nn.Module):
         self.lstm_dropout = SharedDropout(p=lstm_dropout)
 
         # the MLP layers
-        self.mlp_edge_d = MLP(n_in=n_lstm_hidden*2, n_out=n_mlp_edge, dropout=mlp_dropout)
-        self.mlp_edge_h = MLP(n_in=n_lstm_hidden*2, n_out=n_mlp_edge, dropout=mlp_dropout)
-        self.mlp_label_d = MLP(n_in=n_lstm_hidden*2, n_out=n_mlp_label, dropout=mlp_dropout)
-        self.mlp_label_h = MLP(n_in=n_lstm_hidden*2, n_out=n_mlp_label, dropout=mlp_dropout)
+        self.mlp_edge_d = MLP(n_in=n_lstm_hidden*2, n_out=n_mlp_edge, dropout=edge_mlp_dropout, activation=False)
+        self.mlp_edge_h = MLP(n_in=n_lstm_hidden*2, n_out=n_mlp_edge, dropout=edge_mlp_dropout, activation=False)
+        self.mlp_label_d = MLP(n_in=n_lstm_hidden*2, n_out=n_mlp_label, dropout=label_mlp_dropout, activation=False)
+        self.mlp_label_h = MLP(n_in=n_lstm_hidden*2, n_out=n_mlp_label, dropout=label_mlp_dropout, activation=False)
 
         # the Biaffine layers
         self.edge_attn = Biaffine(n_in=n_mlp_edge, n_out=2, bias_x=True, bias_y=True)
@@ -143,7 +152,6 @@ class BiaffineSemanticDependencyModel(nn.Module):
     def load_pretrained(self, embed=None):
         if embed is not None:
             self.pretrained = nn.Embedding.from_pretrained(embed)
-            nn.init.zeros_(self.word_embed.weight)
         return self
 
     def forward(self, words, feats):
@@ -175,7 +183,8 @@ class BiaffineSemanticDependencyModel(nn.Module):
         # get outputs from embedding layers
         word_embed = self.word_embed(ext_words)
         if hasattr(self, 'pretrained'):
-            word_embed += self.pretrained(words)
+            word_embed = torch.cat((word_embed, self.embed_proj(self.pretrained(words))), -1)
+
         feat_embed = self.feat_embed(feats)
         word_embed, feat_embed = self.embed_dropout(word_embed, feat_embed)
         # concatenate the word and feat representations
@@ -187,15 +196,15 @@ class BiaffineSemanticDependencyModel(nn.Module):
         x = self.lstm_dropout(x)
 
         # apply MLPs to the BiLSTM output states
-        arc_d = self.mlp_edge_d(x)
-        arc_h = self.mlp_edge_h(x)
-        rel_d = self.mlp_label_d(x)
-        rel_h = self.mlp_label_h(x)
+        edge_d = self.mlp_edge_d(x)
+        edge_h = self.mlp_edge_h(x)
+        label_d = self.mlp_label_d(x)
+        label_h = self.mlp_label_h(x)
 
         # [batch_size, seq_len, seq_len, 2]
-        s_egde = self.edge_attn(arc_d, arc_h).permute(0, 2, 3, 1)
+        s_egde = self.edge_attn(edge_d, edge_h).permute(0, 2, 3, 1)
         # [batch_size, seq_len, seq_len, n_labels]
-        s_label = self.label_attn(rel_d, rel_h).permute(0, 2, 3, 1)
+        s_label = self.label_attn(label_d, label_h).permute(0, 2, 3, 1)
 
         return s_egde, s_label
 
@@ -219,10 +228,9 @@ class BiaffineSemanticDependencyModel(nn.Module):
         """
 
         edge_mask = edges.gt(0) & mask
-        arc_loss = self.criterion(s_egde[mask], edges[mask])
-        rel_loss = self.criterion(s_label[edge_mask], labels[edge_mask])
-
-        return arc_loss + rel_loss
+        edge_loss = self.criterion(s_egde[mask], edges[mask])
+        label_loss = self.criterion(s_label[edge_mask], labels[edge_mask])
+        return self.args.interpolation * edge_loss + (1 - self.args.interpolation) * label_loss
 
     def decode(self, s_egde, s_label, mask):
         r"""

@@ -25,6 +25,16 @@ class Transform(object):
     def __init__(self):
         self.training = True
 
+    def __repr__(self):
+        s = '\n'
+        for i, field in enumerate(self):
+            if not isinstance(field, Iterable):
+                field = [field]
+            for f in field:
+                if f is not None:
+                    s += f"    {f}\n"
+        return f"{self.__class__.__name__}({s})"
+
     def __call__(self, sentences):
         pairs = dict()
         for field in self:
@@ -204,21 +214,21 @@ class CoNLL(Transform):
 
     @classmethod
     def get_edges(cls, sequence):
-        edges = [[0]*len(sequence) for _ in range(len(sequence))]
-        for i, s in enumerate(sequence):
+        edges = [[0]*(len(sequence)+1) for _ in range(len(sequence)+1)]
+        for i, s in enumerate(sequence, 1):
             if s != '_':
                 for pair in s.split('|'):
-                    edges[i][int(pair.split(':')[0])-1] = 1
+                    edges[i][int(pair.split(':')[0])] = 1
         return edges
 
     @classmethod
     def get_labels(cls, sequence):
-        labels = [[None]*len(sequence) for _ in range(len(sequence))]
-        for i, s in enumerate(sequence):
+        labels = [[None]*(len(sequence)+1) for _ in range(len(sequence)+1)]
+        for i, s in enumerate(sequence, 1):
             if s != '_':
                 for pair in s.split('|'):
                     edge, label = pair.split(':')
-                    labels[i][int(edge)-1] = label
+                    labels[i][int(edge)] = label
         return labels
 
     @classmethod
@@ -358,6 +368,7 @@ class CoNLL(Transform):
         i, start, sentences = 0, 0, []
         for line in progress_bar(lines, leave=False):
             if not line:
+                # 空行因为strip的原因已经变成''
                 sentences.append(CoNLLSentence(self, lines[start:i]))
                 start = i + 1
             i += 1
@@ -365,6 +376,7 @@ class CoNLL(Transform):
             sentences = [i for i in sentences if self.isprojective(list(map(int, i.arcs)))]
         if max_len is not None:
             sentences = [i for i in sentences if len(i) < max_len]
+            # 直接把过长的句子丢弃了
 
         return sentences
 

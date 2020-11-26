@@ -7,11 +7,13 @@ import torch.nn as nn
 from supar.models import BiaffineSemanticDependencyModel
 from supar.parsers.parser import Parser
 from supar.utils import Config, Dataset, Embedding
-from supar.utils.common import pad, unk
+from supar.utils.common import bos, pad, unk
 from supar.utils.field import ChartField, Field, SubwordField
 from supar.utils.logging import get_logger, progress_bar
 from supar.utils.metric import ChartMetric
 from supar.utils.transform import CoNLL
+from torch.optim import Adam
+from torch.optim.lr_scheduler import ExponentialLR
 
 logger = get_logger(__name__)
 
@@ -37,7 +39,7 @@ class BiaffineSemanticDependencyParser(Parser):
         if self.args.feat in ('char', 'bert'):
             self.WORD, self.FEAT = self.transform.FORM
         else:
-            self.WORD, self.FEAT = self.transform.FORM, self.transform.CPOS
+            self.WORD, self.FEAT = self.transform.FORM, self.transform.POS
         self.EDGE, self.LABEL = self.transform.PHEAD
 
     def train(self, train, dev, test, buckets=32, batch_size=5000, verbose=True, **kwargs):
@@ -111,6 +113,7 @@ class BiaffineSemanticDependencyParser(Parser):
 
             mask = words.ne(self.WORD.pad_index)
             mask = mask.unsqueeze(1) & mask.unsqueeze(2)
+            mask[:, 0] = 0
             s_edge, s_label = self.model(words, feats)
             loss = self.model.loss(s_edge, s_label, edges, labels, mask)
             loss.backward()
@@ -131,6 +134,7 @@ class BiaffineSemanticDependencyParser(Parser):
         for words, feats, edges, labels in loader:
             mask = words.ne(self.WORD.pad_index)
             mask = mask.unsqueeze(1) & mask.unsqueeze(2)
+            mask[:, 0] = 0
             s_edge, s_label = self.model(words, feats)
             loss = self.model.loss(s_edge, s_label, edges, labels, mask)
             total_loss += loss.item()
@@ -150,7 +154,8 @@ class BiaffineSemanticDependencyParser(Parser):
         for words, feats in progress_bar(loader):
             mask = words.ne(self.WORD.pad_index)
             mask = mask.unsqueeze(1) & mask.unsqueeze(2)
-            lens = mask[:, 0].sum(-1).tolist()
+            mask[:, 0] = 0
+            lens = mask[:, 1].sum(-1).tolist()
             s_edge, s_label = self.model(words, feats)
             charts.extend(self.model.decode(s_edge, s_label, mask))
             if self.args.prob:
@@ -164,15 +169,25 @@ class BiaffineSemanticDependencyParser(Parser):
         return preds
 
     @classmethod
-    def build(cls, path, min_freq=2, fix_len=20, **kwargs):
+    def build(cls,
+              path,
+              optimizer_args={'lr': 1e-3, 'betas': (.0, .95), 'eps': 1e-12, 'weight_decay': 3e-9},
+              scheduler_args={'gamma': .75**(1/5000)},
+              min_freq=7,
+              fix_len=20,
+              **kwargs):
         r"""
         Build a brand-new Parser, including initialization of all data fields and model parameters.
 
         Args:
             path (str):
                 The path of the model to be saved.
+            optimizer_args (dict):
+                Arguments for creating an optimizer.
+            scheduler_args (dict):
+                Arguments for creating a scheduler.
             min_freq (str):
-                The minimum frequency needed to include a token in the vocabulary. Default: 2.
+                The minimum frequency needed to include a token in the vocabulary. Default:7.
             fix_len (int):
                 The max length of all subword pieces. The excess part of each piece will be truncated.
                 Required if using CharLSTM/BERT.
@@ -191,7 +206,7 @@ class BiaffineSemanticDependencyParser(Parser):
             return parser
 
         logger.info("Building the fields")
-        WORD = Field('words', pad=pad, unk=unk, lower=True)
+        WORD = Field('words', pad=pad, unk=unk, bos=bos, lower=True)
         if args.feat == 'char':
             FEAT = SubwordField('chars', pad=pad, unk=unk, fix_len=args.fix_len)
         elif args.feat == 'bert':
@@ -204,13 +219,14 @@ class BiaffineSemanticDependencyParser(Parser):
                                 tokenize=tokenizer.tokenize)
             FEAT.vocab = tokenizer.get_vocab()
         else:
-            FEAT = Field('tags')
-        EDGE = ChartField('edges', use_vocab=False, fn=CoNLL.get_edges)
-        LABEL = ChartField('labels', fn=CoNLL.get_labels)
+            FEAT = Field('tags', bos=bos)
+        EDGE = ChartField('edges', bos=bos, use_vocab=False, fn=CoNLL.get_edges)
+        LABEL = ChartField('labels', bos=bos, fn=CoNLL.get_labels)
         if args.feat in ('char', 'bert'):
             transform = CoNLL(FORM=(WORD, FEAT), PHEAD=(EDGE, LABEL))
         else:
-            transform = CoNLL(FORM=WORD, CPOS=FEAT, PHEAD=(EDGE, LABEL))
+            transform = CoNLL(FORM=WORD, POS=FEAT, PHEAD=(EDGE, LABEL))
+        logger.info(f"{transform}")
 
         train = Dataset(transform, args.train)
         WORD.build(train, args.min_freq, (Embedding.load(args.embed, args.unk) if args.embed else None))
@@ -222,8 +238,16 @@ class BiaffineSemanticDependencyParser(Parser):
             'n_labels': len(LABEL.vocab),
             'pad_index': WORD.pad_index,
             'unk_index': WORD.unk_index,
-            'feat_pad_index': FEAT.pad_index,
+            'bos_index': WORD.bos_index,
+            'feat_pad_index': FEAT.pad_index
         })
+
+        logger.info("Building the model")
         model = cls.MODEL(**args)
         model.load_pretrained(WORD.embed).to(args.device)
-        return cls(args, model, transform)
+        logger.info(f"{model}\n")
+
+        optimizer = Adam(model.parameters(), **optimizer_args)
+        scheduler = ExponentialLR(optimizer, **scheduler_args)
+
+        return cls(args, model, transform, optimizer, scheduler)
